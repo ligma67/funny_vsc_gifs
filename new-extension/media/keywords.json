@@ -1,0 +1,12 @@
+{
+  "override": "tenor.gif",
+  "miku": "miku.gif",
+  "kasane": "teto.gif",
+  "hatsune": "miku.gif",
+  "async": "time.gif",
+  "await": "wait.gif",
+  "null": "glitch.gif",
+  "ref": "link.gif",
+  "out": "explosion.gif",
+  "void": "void.gif"
+}
