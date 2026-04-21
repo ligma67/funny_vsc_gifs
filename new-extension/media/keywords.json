@@ -8,5 +8,8 @@
   "null": "glitch.gif",
   "ref": "link.gif",
   "out": "explosion.gif",
-  "void": "void.gif"
+  "void": "void.gif",
+  "static": "static.gif",
+  "new": "new.gif",
+  "try":"try.gif"
 }
