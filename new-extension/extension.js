@@ -6,12 +6,14 @@ let decorationTypes = new Map();
 let keywordMap = {};
 let soundMap = {};
 let panel;
+let lastWord = null;
 
 function activate(context) {
     console.log("activated");
 
     loadKeywords(context);
     loadSounds(context);
+
     const update = debounce(() => updateDecorations(context), 50);
 
     context.subscriptions.push(
@@ -34,18 +36,32 @@ function activate(context) {
 
     panel.webview.html = getWebviewContent(context);
 
-    // 🧠 hover (оставил, но без звука)
+    // 🎧 hover звук
     const hover = vscode.languages.registerHoverProvider('*', {
         provideHover(document, position) {
             const range = document.getWordRangeAtPosition(position);
+            if (!range) return;
+
             const word = document.getText(range);
 
             if (soundMap[word]) {
+                if (word === lastWord) return;
+                lastWord = word;
+
+                const soundUri = panel.webview.asWebviewUri(
+                    vscode.Uri.file(
+                        path.join(context.extensionPath, 'media', soundMap[word])
+                    )
+                );
+
                 panel.webview.postMessage({
                     type: 'sound',
-                    name: word
+                    src: soundUri.toString()
                 });
+
+                return new vscode.Hover(`🎧 ${word}`);
             } else {
+                lastWord = null;
                 panel.webview.postMessage({ type: 'stop' });
             }
         }
@@ -53,42 +69,16 @@ function activate(context) {
 
     context.subscriptions.push(hover);
 
-    // 🔊 КЛИК = ЗВУК (твоя логика, встроена)
-    let lastPlay = 0;
-
-    context.subscriptions.push(
-        vscode.window.onDidChangeTextEditorSelection((event) => {
-            const editor = event.textEditor;
-            if (!editor) return;
-
-            if (event.kind !== vscode.TextEditorSelectionChangeKind.Mouse) return;
-
-            const selection = editor.selection;
-            const range = editor.document.getWordRangeAtPosition(selection.active);
-            if (!range) return;
-
-            const word = editor.document.getText(range);
-
-            if (word === 'override') {
-                console.log("playing sound??")
-                const now = Date.now();
-                if (now - lastPlay < 400) return;
-                console.log("sending message")
-                panel.webview.postMessage({ type: 'sound', name: 'override' });
-                lastPlay = now;
-            }
-        })
-    );
-
     update();
 }
 
-// 📦 JSON loader
+// 📦 JSON загрузка
 function loadKeywords(context) {
     const jsonPath = path.join(context.extensionPath, 'media', 'keywords.json');
     const raw = fs.readFileSync(jsonPath, 'utf-8');
     keywordMap = JSON.parse(raw);
 }
+
 function loadSounds(context) {
     const jsonPath = path.join(context.extensionPath, 'media', 'sounds.json');
     if (!fs.existsSync(jsonPath)) return;
@@ -96,7 +86,8 @@ function loadSounds(context) {
     const raw = fs.readFileSync(jsonPath, 'utf-8');
     soundMap = JSON.parse(raw);
 }
-// 🎨 decoration cache
+
+// 🎨 декорации (GIF)
 function getDecorationType(gifData) {
     if (decorationTypes.has(gifData)) {
         return decorationTypes.get(gifData);
@@ -127,7 +118,6 @@ function updateDecorations(context) {
 
     for (const keyword in keywordMap) {
         const gifPath = path.join(context.extensionPath, 'media', keywordMap[keyword]);
-
         if (!fs.existsSync(gifPath)) continue;
 
         const gifBase64 = fs.readFileSync(gifPath).toString('base64');
@@ -139,7 +129,6 @@ function updateDecorations(context) {
         while ((match = regex.exec(text)) !== null) {
             const start = editor.document.positionAt(match.index);
             const end = editor.document.positionAt(match.index + keyword.length);
-
             const range = new vscode.Range(start, end);
 
             if (!grouped.has(gifData)) {
@@ -158,54 +147,98 @@ function updateDecorations(context) {
 
 // 🔊 WebView
 function getWebviewContent(context) {
-    const audioUri = panel.webview.asWebviewUri(
-        vscode.Uri.file(path.join(context.extensionPath, 'media', 'override.mp3'))
-    );
-
     return `
     <!DOCTYPE html>
     <html>
-    <body>
-        <audio id="audio" src="${audioUri}" preload="auto"></audio>
-
-        <button id="unlock" style="padding:8px 12px;">
-            Click once to enable sound
-        </button>
+    <body style="font-family:sans-serif; padding:10px;">
+        <button id="unlockBtn">🔊 Enable sound</button>
 
         <script>
-            const audio = document.getElementById('audio');
-            const unlockBtn = document.getElementById('unlock');
+            let currentAudio = null;
             let unlocked = false;
+            let fadeInterval = null;
 
-            async function unlockAudio() {
+            const btn = document.getElementById('unlockBtn');
+
+            btn.addEventListener('click', async () => {
                 try {
-                    audio.volume = 0;
-                    await audio.play();
-                    audio.pause();
-                    audio.currentTime = 0;
-                    audio.volume = 1;
+                    const temp = new Audio();
+                    temp.src = "data:audio/mp3;base64,";
+                    await temp.play().catch(()=>{});
+
                     unlocked = true;
-                    unlockBtn.textContent = 'Sound enabled';
-                    unlockBtn.disabled = true;
-                    console.log('audio unlocked');
+                    btn.textContent = "✅ Sound enabled";
+                    btn.disabled = true;
                 } catch (e) {
-                    console.log('unlock failed', e);
+                    console.log("unlock failed", e);
+                }
+            });
+
+            // 💥 токен последнего hover
+            let hoverToken = 0;
+
+            function stopCurrentAudio() {
+                if (fadeInterval) {
+                    clearInterval(fadeInterval);
+                    fadeInterval = null;
+                }
+
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio.currentTime = 0;
+                    currentAudio = null;
                 }
             }
 
-            unlockBtn.addEventListener('click', unlockAudio);
+            function playSound(src, token) {
+                if (!unlocked) return;
 
-            window.addEventListener('message', async (event) => {
+                // 💥 если уже пришёл новый hover — игнор старый
+                if (token !== hoverToken) return;
+
+                stopCurrentAudio();
+
+                currentAudio = new Audio(src);
+                currentAudio.volume = 1;
+
+                currentAudio.play().catch(() => {});
+            }
+
+            function fadeOut() {
+                if (!currentAudio) return;
+
+                if (fadeInterval) clearInterval(fadeInterval);
+
+                fadeInterval = setInterval(() => {
+                    if (!currentAudio) {
+                        clearInterval(fadeInterval);
+                        fadeInterval = null;
+                        return;
+                    }
+
+                    if (currentAudio.volume > 0.05) {
+                        currentAudio.volume -= 0.05;
+                    } else {
+                        stopCurrentAudio();
+                    }
+                }, 30);
+            }
+
+            window.addEventListener('message', (event) => {
                 if (event.data.type === 'sound') {
-                    if (!unlocked) return;
 
-                    audio.currentTime = 0;
-                    audio.play().catch(err => console.log('play error', err));
+                    // 💥 новый hover = новый токен
+                    hoverToken++;
+
+                    const myToken = hoverToken;
+
+                    setTimeout(() => {
+                        playSound(event.data.src, myToken);
+                    }, 30); // лёгкий debounce
                 }
 
                 if (event.data.type === 'stop') {
-                    audio.pause();
-                    audio.currentTime = 0;
+                    fadeOut();
                 }
             });
         </script>
@@ -214,12 +247,11 @@ function getWebviewContent(context) {
     `;
 }
 
-// 🔧 regex escape
+// 🔧 utils
 function escapeRegExp(str) {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ⏱ debounce
 function debounce(fn, delay) {
     let t;
     return (...args) => {
